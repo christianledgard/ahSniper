@@ -33,20 +33,21 @@ def init(latitude, longitude):
     gql_body = """query stores($filter: StoreFilterInput, $size: PageSize!, $start: Int) {stores(filter: $filter, size: $size, start: $start) { result { ...storeList __typename} page { total hasNextPage __typename} __typename }}fragment storeList on Store { id name  storeType  phone distance address { ...storeAddress __typename } geoLocation { latitude longitude __typename} openingDays { ...openingDaysInfo __typename } __typename}fragment storeAddress on StoreAddress { city street houseNumber houseNumberExtra postalCode countryCode __typename}fragment openingDaysInfo on StoreOpeningDay { dayName type date openingHour { ...storeOpeningHour __typename } }fragment storeOpeningHour on StoreOpeningHour { date openFrom openUntil  __typename}"""
     json_data = {"operationName":"stores","variables":{"filter":{"location":{"latitude":latitude,"longitude":longitude}},"start":0,"size":os.environ['number_of_stores']},"query": gql_body} #tweak size: number of albert heijns this variable is for filtering
     response = requests.post(url=url, headers=headers, json=json_data, ) #simple post request putting it all together
-
     if response.status_code == 200:
         storedict = {}
         templist = []
         jsonformatting = json.loads(response.text)
         for x in (jsonformatting["data"]["stores"]["result"]): #json filters for grabbing a couple of important variables
-            templist.append(x['name'])
-            templist.append(x['address'])
-            templist.append(x['distance'])
-            for y in (x['openingDays']):
-                if y['type'] == "CURRENT":
-                    templist.append(y['openingHour'])
-            storedict[x['id']] = templist
-            templist = []
+            if x['storeType'] != "TOGO":
+                templist.append(x['name'])
+                templist.append(x['address'])
+                templist.append(x['distance'])
+                for y in (x['openingDays']):
+                    if y['type'] == "CURRENT":
+                        templist.append(y['openingHour'])
+                templist.append(x['storeType'])
+                storedict[x['id']] = templist
+                templist = []
         logging.info(f"Succesful request against graphQL endpoint {url} with {response.status_code}")
     else:
         logging.error(f"Unsuccesful request against graphQL endpoint {url} with {response.status_code}")
@@ -128,21 +129,25 @@ def boxRequests():
         a = requests.get(f"https://api.ah.nl/ms/mobile-services/leftovers/v2/surprise-boxes/available/stores/{key}", headers={"Authorization": "Bearer " + accessToken})
         if a.text != "[]":
             for offer in json.loads(a.text):
-                cursor.execute('SELECT * FROM APPIE_OFFERS WHERE (StoreId=? AND BoxCat=? AND BoxOldPrice=? AND BoxNewPrice=?)', (offer["storeId"],offer['boxCategory'],offer['boxOldPrice'],offer['boxNewPrice']))
-                entry = cursor.fetchone()
-                if entry is None:
-                    cursor.execute('INSERT INTO APPIE_OFFERS (StoreId,Amount,BoxCat,BoxOldPrice,BoxNewPrice) VALUES (?,?,?,?,?)', (offer["storeId"],offer['amount'],offer['boxCategory'],offer['boxOldPrice'],offer['boxNewPrice']))
-                    sqliteConnection.commit()
-                    telegramConnection(f"📦 {offer['boxCategory']}, Available: {offer['amount']}\n🏢 {value[1]['street']} {value[1]['houseNumber']}, {value[1]['city']}\n🏃‍♂️ {value[2]} meters distance\n💰 €{offer['boxNewPrice']} down from €{offer['boxOldPrice']} \n🔔 Pickup {offer['pickupFrom']} until {offer['pickupTill']}\n🕢 Open {value[3]['openFrom']} until {value[3]['openUntil']}")
-                else:
-                    if entry[1] != offer['amount']:
-                        #update to right amount and send new message
-                        cursor.execute('UPDATE APPIE_OFFERS SET Amount = ? WHERE (StoreId=? AND BoxCat=? AND BoxOldPrice=? AND BoxNewPrice=?)', (offer['amount'],offer["storeId"],offer['boxCategory'],offer['boxOldPrice'],offer['boxNewPrice']))
+                if offer['boxCategory'] != "BREAD":
+                    cursor.execute('SELECT * FROM APPIE_OFFERS WHERE (StoreId=? AND BoxCat=? AND BoxOldPrice=? AND BoxNewPrice=?)', (offer["storeId"],offer['boxCategory'],offer['boxOldPrice'],offer['boxNewPrice']))
+                    entry = cursor.fetchone()
+                    store_emoji = "🏢"
+                    if value[4] == "XL":
+                        store_emoji = "🏰👀"
+                    if entry is None:
+                        cursor.execute('INSERT INTO APPIE_OFFERS (StoreId,Amount,BoxCat,BoxOldPrice,BoxNewPrice) VALUES (?,?,?,?,?)', (offer["storeId"],offer['amount'],offer['boxCategory'],offer['boxOldPrice'],offer['boxNewPrice']))
                         sqliteConnection.commit()
-                        telegramConnection(f"📦 {offer['boxCategory']}, Available: {offer['amount']}\n🏢 {value[1]['street']} {value[1]['houseNumber']}, {value[1]['city']}\n🏃‍♂️ {value[2]} meters distance\n💰 €{offer['boxNewPrice']} down from €{offer['boxOldPrice']} \n🔔 Pickup {offer['pickupFrom']} until {offer['pickupTill']}\n🕢 Open {value[3]['openFrom']} until {value[3]['openUntil']}")
-                        logging.info(f"{offer['boxCategory']} at {offer['storeId']} amount changed to {offer['amount']} from {entry[1]}")
+                        telegramConnection(f"📦 {offer['boxCategory']}, Available: {offer['amount']}\n{store_emoji} {value[1]['street']} {value[1]['houseNumber']}, {value[1]['city']}\n🏃‍♂️ {value[2]} meters distance\n💰 €{offer['boxNewPrice']} down from €{offer['boxOldPrice']} \n🔔 Pickup {offer['pickupFrom']} until {offer['pickupTill']}\n🕢 Open {value[3]['openFrom']} until {value[3]['openUntil']}")
                     else:
-                        logging.info(f"{offer['boxCategory']} at {offer['storeId']} already in database")
+                        if entry[1] != offer['amount']:
+                            #update to right amount and send new message
+                            cursor.execute('UPDATE APPIE_OFFERS SET Amount = ? WHERE (StoreId=? AND BoxCat=? AND BoxOldPrice=? AND BoxNewPrice=?)', (offer['amount'],offer["storeId"],offer['boxCategory'],offer['boxOldPrice'],offer['boxNewPrice']))
+                            sqliteConnection.commit()
+                            telegramConnection(f"\n📦 {offer['boxCategory']}, Available: {offer['amount']}\n{store_emoji} {value[1]['street']} {value[1]['houseNumber']}, {value[1]['city']}\n🏃‍♂️ {value[2]} meters distance\n💰 €{offer['boxNewPrice']} down from €{offer['boxOldPrice']} \n🔔 Pickup {offer['pickupFrom']} until {offer['pickupTill']}\n🕢 Open {value[3]['openFrom']} until {value[3]['openUntil']}")
+                            logging.info(f"{offer['boxCategory']} at {offer['storeId']} amount changed to {offer['amount']} from {entry[1]}")
+                        else:
+                            logging.info(f"{offer['boxCategory']} at {offer['storeId']} already in database")
                 
 def main():
     '''
